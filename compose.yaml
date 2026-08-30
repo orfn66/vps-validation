@@ -6,15 +6,41 @@ services:
       POSTGRES_USER: platform_admin
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}
       POSTGRES_DB: test_app
-      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
     volumes:
       - test_pg_data:/var/lib/postgresql/data
-      - ./database/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U platform_admin -d test_app"]
       interval: 5s
       timeout: 5s
       retries: 12
+
+  db-init:
+    image: postgres:17-alpine
+    restart: "no"
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: test_app
+      PGUSER: platform_admin
+      PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        psql --set=ON_ERROR_STOP=1 --set=app_password="$$APP_DB_PASSWORD" <<'SQL'
+        SELECT format(
+          'CREATE ROLE test_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD %L',
+          :'app_password'
+        )
+        WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'test_app') \gexec
+        ALTER ROLE test_app PASSWORD :'app_password';
+        GRANT CONNECT ON DATABASE test_app TO test_app;
+        GRANT USAGE, CREATE ON SCHEMA public TO test_app;
+        SQL
 
   api:
     build:
@@ -28,8 +54,8 @@ services:
       PGPASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
       PORT: "3000"
     depends_on:
-      db:
-        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     expose:
       - "3000"
     healthcheck:
